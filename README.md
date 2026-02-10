@@ -65,9 +65,14 @@ install.packages(c("tidyverse", "ggpubr", "ggcorrplot", "ggbreak"))
 
 ## 📈 核心结果展示
 
+<img width="403" height="275" alt="EGFR-HERC4-SAV1 Axis Trend" src="https://github.com/user-attachments/assets/53c1f4d5-773f-4f0f-9718-89e6b747f60c" />
+<img width="403" height="275" alt="Rplot" src="https://github.com/user-attachments/assets/32b5ac6b-9aa5-4932-aebc-3d56688a9f65" />
+<img width="403" height="275" alt="Correlation" src="https://github.com/user-attachments/assets/586c3542-b7f8-4de0-8113-c384731a16c8" />
+<img <img width="403" height="275" alt="Corelation2" src="https://github.com/user-attachments/assets/365c0d20-6c10-45d7-8aa0-dedf5bae9b95" />
+width="403" height="275" alt="Rplot01" src="https://github.com/user-attachments/assets/fe27fe90-9ad7-4869-806b-9b970f0e1ca8" />
+
 
 ---
-
 ## 📝 使用说明
 
 1. **数据准备**：将 GSE313176 的 RAW 文件解压至 `E:/GSE313176_RAW`。
