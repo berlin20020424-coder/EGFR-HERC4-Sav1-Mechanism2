@@ -1,0 +1,205 @@
+library(tidyverse)
+library(DESeq2)
+library(org.Mm.eg.db)
+                                
+# 1. 设置工作目录并获取文件名
+setwd("文件解压路径/E:/GSE313176_RAW")
+file_list <- list.files(pattern = "Retinal.*txt.gz")
+
+# 2. 批量读取并合并
+library(tidyverse)
+
+# 定义一个读取函数，提取基因名和 Count 列
+read_sample <- function(file) {
+  sample_name <- str_extract(file, "GSM\\d+")
+  df <- read.table(file, header = TRUE, row.names = 1)
+  colnames(df) <- sample_name
+  return(df)
+}
+
+# 合并所有 Retinal 样本
+all_counts <- map(file_list, read_sample) %>% bind_cols()
+# 3. 创建元数据
+metadata <- data.frame(
+  sample_id = colnames(all_counts),
+  # 根据文件名规律提取组别和时间
+  group = ifelse(grepl("Sham", file_list), "Control", "Diabetes"),
+  time = case_when(
+    grepl("1m", file_list) ~ "1M",
+    grepl("3m", file_list) ~ "3M",
+    grepl("6m", file_list) ~ "6M",
+    TRUE ~ "Other"
+  )
+)
+metadata$time <- factor(metadata$time, levels = c("1M", "3M", "6M"))
+library(tidyverse)
+library(DESeq2)
+
+# 1. 设置路径并筛选“视网膜(Retinal)”样本文件
+path <- "E:/GSE313176_RAW" 
+# 选出所有 Retinal 样本，排除 Endothelial 样本
+retinal_files <- list.files(path, pattern = "Retinal.*txt.gz", full.names = TRUE)
+
+# 2. 健壮读取：确保每个基因行都精准对齐
+read_and_format <- function(f) {
+  # 读取文件，通常第一列是基因名，第二列是 Count
+  d <- read.table(f, header = TRUE, row.names = 1)
+  # 提取 GSM 编号作为列名
+  colnames(d) <- str_extract(basename(f), "GSM\\d+")
+  return(d)
+}
+
+# 3. 合并数据并处理缺失值
+# 使用 reduce(cbind) 确保行名（基因名）一致
+data_list <- lapply(retinal_files, read_and_format)
+all_counts <- do.call(cbind, data_list)
+all_counts[is.na(all_counts)] <- 0  # 填补缺失
+all_counts <- as.matrix(all_counts)
+
+# 4. 构建准确的 Metadata
+# 必须确保 metadata 的行名和 all_counts 的列名顺序完全一致
+metadata <- data.frame(
+  sample_id = colnames(all_counts),
+  file_name = basename(retinal_files)
+) %>%
+  mutate(
+    group = ifelse(grepl("Sham", file_name), "Control", "Diabetes"),
+    time = case_when(
+      grepl("_1m_", file_name) ~ "1M",
+      grepl("_3m_", file_name) ~ "3M",
+      grepl("_6m_", file_name) ~ "6M",
+      TRUE ~ "Other"
+    )
+  )
+
+# 设置因子水平，方便后续画图
+metadata$time <- factor(metadata$time, levels = c("1M", "3M", "6M"))
+rownames(metadata) <- metadata$sample_id
+
+# 5. 再次检查对齐情况 (这是解决之前报错的关键)
+if(all(colnames(all_counts) == rownames(metadata))) {
+  message("数据对齐成功！开始差异分析...")
+  
+  dds <- DESeqDataSetFromMatrix(countData = round(all_counts),
+                                colData = metadata,
+                                design = ~ group + time)
+  dds <- estimateSizeFactors(dds)
+  norm_counts <- counts(dds, normalized = TRUE)
+} else {
+  stop("样本名称不匹配，请检查文件名提取逻辑")
+}
+
+head(rownames(norm_counts))
+
+library(org.Mm.eg.db)
+
+# 2. 提取当前行名并去掉版本号（如 ENSMUSGxxx.1 -> ENSMUSGxxx）
+ensembl_ids <- gsub("\\..*", "", rownames(norm_counts))
+
+# 3. 进行转换
+gene_map <- select(org.Mm.eg.db, 
+                   keys = ensembl_ids, 
+                   columns = c("SYMBOL"), 
+                   keytype = "ENSEMBL")
+
+# 4. 去除重复和空值，只保留有 Symbol 的基因
+gene_map <- gene_map[!is.na(gene_map$SYMBOL) & !duplicated(gene_map$ENSEMBL), ]
+
+# 5. 筛选矩阵：只保留那些能转换出 Symbol 的行
+final_counts <- norm_counts[rownames(norm_counts) %in% gene_map$ENSEMBL, ]
+# 将行名替换为 Symbol
+rownames(final_counts) <- gene_map$SYMBOL[match(rownames(final_counts), gene_map$ENSEMBL)]
+
+# 6. 验证：再次搜索你的目标基因
+grep("Herc4", rownames(final_counts), value = TRUE, ignore.case = TRUE)
+target_genes <- c("Egfr", "Herc4", "Sav1")
+
+# 提取数据并准备绘图
+plot_df <- final_counts[rownames(final_counts) %in% target_genes, , drop = FALSE] %>%
+  as.data.frame() %>%
+  rownames_to_column("Gene") %>%
+  pivot_longer(-Gene, names_to = "sample_id", values_to = "Expression") %>%
+  left_join(metadata, by = "sample_id")
+
+# 绘图
+ggplot(plot_df, aes(x = time, y = Expression, color = group, group = group)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  facet_wrap(~Gene, scales = "free_y") +
+  theme_bw() +
+  scale_color_manual(values = c("Control" = "#56B4E9", "Diabetes" = "#D55E00")) +
+  labs(title = "EGFR-HERC4-Sav1 Axis Trend (GSE313176)",
+       subtitle = "Validated after ID conversion",
+       x = "Timepoint", y = "Normalized Expression")
+library(ggcorrplot)
+
+# 1. 定义目标基因和纤维化标志物
+# 纤维化标志物：Fn1 (纤连蛋白), Col1a1 (I型胶原), Acta2 (SMA)
+fibrosis_genes <- c("Fn1", "Col1a1", "Acta2")
+target_axis <- c("Egfr", "Herc4", "Sav1")
+all_test_genes <- c(target_axis, fibrosis_genes)
+
+# 2. 提取这些基因在 6M 样本中的表达数据
+# 筛选 6M 样本的列名
+samples_6m <- metadata$sample_id[metadata$time == "6M"]
+corr_matrix_data <- t(final_counts[all_test_genes, samples_6m])
+
+# 3. 计算 Pearson 相关系数
+corr_matrix <- cor(corr_matrix_data, method = "pearson")
+p_mat <- cor_pmat(corr_matrix_data) # 计算 P 值
+
+# 4. 绘制热图
+ggcorrplot(corr_matrix, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE, 
+           p.mat = p_mat,
+           title = "Correlation: EGFR-HERC4 Axis vs Fibrosis Markers (6M)")
+
+# 绘制 EGFR 与 Col1a1 的线性回归图
+library(ggpubr)
+data_6m <- as.data.frame(corr_matrix_data)
+ggscatter(data_6m, x = "Egfr", y = "Col1a1", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Egfr Expression", ylab = "Col1a1 (Fibrosis Marker)",
+          title = "Correlation in 6M Diabetic Retina")
+
+library(Seurat)
+library(tidyverse)
+
+# 1. 读取数据函数
+load_sc <- function(prefix, sample_id) {
+  mtx <- ReadMtx(mtx = paste0(prefix, "_matrix.mtx.gz"),
+                 features = paste0(prefix, "_features.tsv.gz"),
+                 cells = paste0(prefix, "_barcodes.tsv.gz"))
+  obj <- CreateSeuratObject(counts = mtx, project = sample_id)
+  return(obj)
+}
+
+# 2. 加载 STZ 和 Control
+stz_obj <- load_sc("E:/GSE313176_RAW/GSM9363368_STZ", "STZ_3M")
+ctrl_obj <- load_sc("E:/GSE313176_RAW/GSM9363367_W", "Ctrl_3M")
+
+# 3. 合并与常规处理
+sc_merged <- merge(ctrl_obj, y = stz_obj, add.cell.ids = c("Ctrl", "STZ"))
+sc_merged <- NormalizeData(sc_merged)
+sc_merged <- FindVariableFeatures(sc_merged)
+sc_merged <- ScaleData(sc_merged)
+sc_merged <- RunPCA(sc_merged)
+sc_merged <- RunUMAP(sc_merged, dims = 1:20)
+sc_merged <- FindNeighbors(sc_merged, dims = 1:20)
+sc_merged <- FindClusters(sc_merged, resolution = 0.5)
+
+# 1. 鉴定 RPE 簇的编号 (假设根据图形，簇编号为 '5'，请替换为你的 FindClusters 结果)
+# 你可以先运行：DimPlot(sc_merged, label = TRUE) 来确认具体编号
+rpe_cluster_id <- "5" 
+
+# 2. 提取 RPE 亚群进行组间差异分析
+rpe_cells <- subset(sc_merged, idents = rpe_cluster_id)
+
+# 3. 绘制 VlnPlot 展示 EGFR 和 HERC4 在糖尿病环境下的变化
+VlnPlot(rpe_cells, features = c("Egfr", "Herc4", "Sav1"), 
+        group.by = "orig.ident", # 假设你的分组合名为 orig.ident (STZ vs Ctrl)
+        pt.size = 0.1, combine = TRUE) +
+  theme(plot.title = element_text(size = 10))
